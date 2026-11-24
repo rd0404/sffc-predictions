@@ -53,11 +53,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 /* header */
 header{background:var(--head-bg);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
 .top{display:flex;align-items:center;gap:12px;padding:14px 0 4px}
-.crest{width:44px;height:44px;flex:none}
-.crest .c-shield{fill:var(--panel2);stroke:var(--gold)}
-.crest .c-text{fill:var(--gold)}
-.crest .c-ball{fill:var(--ink)}
-.crest .c-patch{fill:var(--bg)}
+.crest{width:46px;height:46px;flex:none;border-radius:10px;object-fit:cover;box-shadow:0 0 0 1px var(--line)}
 .brand h1{font:800 26px/1 "Barlow Condensed",sans-serif;letter-spacing:.5px;margin:0;text-transform:uppercase}
 .brand h1 span{color:var(--gold)}
 .brand p{margin:3px 0 0;color:var(--mute);font-size:12px}
