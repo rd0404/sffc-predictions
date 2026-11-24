@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1a1230">
+<title>SFFC Predictor League</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="top">
+      <svg class="crest" viewBox="0 0 64 64" aria-hidden="true">
+        <path d="M32 3 56 11v20c0 15-10 25-24 30C18 56 8 46 8 31V11z" fill="#2a1a52" stroke="#e8b931" stroke-width="3"/>
+        <text x="32" y="25" text-anchor="middle" font-family="Barlow Condensed,sans-serif" font-weight="800" font-size="13" fill="#e8b931" letter-spacing="1">SFFC</text>
+        <circle cx="32" cy="40" r="10" fill="#f3f0fa"/><path d="M32 33.5l5 3.6-1.9 5.9h-6.2l-1.9-5.9z" fill="#16131f"/>
+      </svg>
+      <div class="brand"><h1>SFFC <span>Predictor</span></h1><p id="season">Satara Football Fan Club</p></div>
+      <div class="sp"></div>
+      <div class="who" id="who"></div>
+    </div>
+    <nav class="tabs" id="tabs">
+      <a href="#home" data-v="home">Home</a>
+      <a href="#predict" data-v="predict">Predict</a>
+      <a href="#gw" data-v="gw">GW Table</a>
+      <a href="#table" data-v="table">Overall</a>
+      <a href="#stats" data-v="stats">Stats</a>
+      <a href="#rules" data-v="rules">Rules</a>
+    </nav>
+  </div>
+</header>
+<main class="wrap" id="main"><div class="empty"><div class="spinner"></div>Loading…</div></main>
+<footer class="wrap">SFFC Predictor League · <a href="admin.html">Admin</a></footer>
+
+<script>
+/* ============ helpers ============ */
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ls = {
+  get(k, d = null) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+async function api(path, body) {
+  const r = await fetch("/api/" + path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  const j = await r.json().catch(() => ({ error: "Bad response from server" }));
+  if (!r.ok) throw new Error(j.error || "Request failed");
+  return j;
+}
+const fmtPts = (x) => (Math.round(x * 10) / 10).toString();
+const when = (iso) => iso ? new Date(iso).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "TBC";
+function toast(t) { const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.appendChild(d); setTimeout(() => d.remove(), 2600); }
+const matchLabel = (m) => `${m.home} v ${m.away}`;
+
+/* ============ state ============ */
+const S = { state: null, tables: null, gw: {}, session: ls.get("sffc_session"), view: "home", gwSel: null, gwMode: "table", phase: "season", tableMode: "totals", timers: [] };
+
+async function loadState() { S.state = await api("state"); }
+async function loadTables(force) { if (!S.tables || force) S.tables = await api("tables"); return S.tables; }
+async function loadGw(n, force) { if (!S.gw[n] || force) S.gw[n] = await api("gw/" + n); return S.gw[n]; }
+
+function whoBox() {
+  const s = S.session;
+  $("#who").innerHTML = s ? `Hi <b>${esc(s.name)}</b><br><a id="logout">Switch player</a>` : "";
+  const l = $("#logout");
+  if (l) l.onclick = () => { ls.del("sffc_session"); S.session = null; whoBox(); render(); };
+}
+
+function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; }
+
+/* ============ countdown ============ */
+function countdownHTML(id) { return `<div class="countdown" id="${id}"></div>`; }
+function startCountdown(id, iso, onEnd) {
+  const el = document.getElementById(id); if (!el || !iso) return;
+  const tick = () => {
+    let ms = Date.parse(iso) - Date.now();
+    if (ms <= 0) { el.innerHTML = `<div><b>0</b><span>locked</span></div>`; clearInterval(t); onEnd && onEnd(); return; }
+    const d = Math.floor(ms / 864e5), h = Math.floor(ms / 36e5) % 24, m = Math.floor(ms / 6e4) % 60, s = Math.floor(ms / 1e3) % 60;
+    el.innerHTML = [[d, "days"], [h, "hrs"], [m, "mins"], [s, "secs"]].map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join("");
+  };
+  const t = setInterval(tick, 1000); S.timers.push(t); tick();
+}
+
+/* ============ aggregations ============ */
+function phaseRange() {
+  if (S.phase === "season") return [1, 38];
+  const p = (S.state.config.phases || []).find((x) => x.id === S.phase);
+  return p ? [p.from, p.to] : [1, 38];
+}
+function aggregate() {
+  const [from, to] = phaseRange();
+  const gws = S.tables.gws.filter((g) => g.gw >= from && g.gw <= to).sort((a, b) => a.gw - b.gw);
+  const names = Object.fromEntries(S.tables.players.map((p) => [p.id, p.name]));
+  const agg = {};
+  for (const g of gws) for (const r of g.rows) {
+    const a = agg[r.pid] ||= { pid: r.pid, name: names[r.pid] || r.name, P: 0, PP: 0, GD: 0, CW: 0, J: 0, JPP: 0, JGD: 0, JCW: 0, B: 0, b1: 0, b2: 0, S: 0, SC: 0, T: 0, byGw: {}, wins: 0 };
+    a.P++; a.PP += r.PP; a.GD += r.GD; a.CW += r.CW; a.J += r.J; a.B += r.B; a.S += r.S; a.SC += r.SC; a.T += r.T;
+    if (r.JR) a["J" + r.JR]++;
+    if (r.bonus?.b1) a.b1++; if (r.bonus?.b2) a.b2++;
+    a.byGw[g.gw] = r.T;
+  }
+  for (const g of gws) { const top = g.rows.filter((r) => r.rank === 1); top.forEach((r) => agg[r.pid] && agg[r.pid].wins++); }
+  const rows = Object.values(agg);
+  rows.forEach((r) => { r.T = Math.round(r.T * 100) / 100; r.J = Math.round(r.J * 100) / 100; });
+  rows.sort((a, b) => b.T - a.T || b.PP - a.PP || b.GD - a.GD || b.CW - a.CW || a.name.localeCompare(b.name));
+  rows.forEach((r, i) => { const p = rows[i - 1]; r.rank = p && p.T === r.T && p.PP === r.PP && p.GD === r.GD && p.CW === r.CW ? p.rank : i + 1; });
+  return { gws, rows };
+}
+
+function podium(rows, key = "T", label = "points") {
+  if (rows.length < 3) return "";
+  const t = rows.slice(0, 3);
+  return `<div class="podium">${[1, 0, 2].map((i) => `<div class="pod p${i + 1}"><div class="medal">${t[i].rank}</div><div class="nm">${esc(t[i].name)}</div><div class="pt">${fmtPts(t[i][key])}</div><div class="lb">${label}</div></div>`).join("")}</div>`;
+}
+const meCls = (pid) => (S.session && S.session.pid === pid ? "me" : "");
+const rkCls = (r) => (r.rank <= 3 ? "r" + r.rank : "");
+function phaseSeg() {
+  const ph = [{ id: "season", name: "Season" }, ...(S.state.config.phases || [])];
+  return `<div class="seg" id="phaseSeg">${ph.map((p) => `<button data-p="${p.id}" class="${S.phase === p.id ? "on" : ""}">${esc(p.name)}</button>`).join("")}</div>`;
+}
+function bindPhase() { document.querySelectorAll("#phaseSeg button").forEach((b) => b.onclick = () => { S.phase = b.dataset.p; render(); }); }
+function stickyFix() {
+  document.querySelectorAll("table.t").forEach((t) => {
+    const s1 = t.querySelector("thead .s1"); const off = s1 ? s1.offsetWidth : 0;
+    t.querySelectorAll(".s2").forEach((el) => el.style.left = off + "px");
+  });
+}
+
+/* ============ views ============ */
+async function viewHome() {
+  const st = S.state;
+  const cur = st.current ? await loadGw(st.current) : null;
+  const tb = await loadTables();
+  let hero = "";
+  if (!cur) {
+    hero = `<div class="hero"><div class="lbl">Season ${esc(st.config.season)}</div><div class="gwbig">Coming soon</div><p class="note">The first gameweek hasn't been published yet.</p></div>`;
+  } else if (!cur.locked) {
+    const g = cur.gw, sub = new Set(cur.submitted);
+    const mine = S.session && sub.has(S.session.pid);
+    hero = `<div class="hero">
+      <div class="lbl">Predictions open</div><div class="gwbig">GW${g.gw}</div>
+      <div class="note" style="margin-top:8px">Deadline <b style="color:var(--ink)">${when(g.deadline)}</b></div>
+      ${countdownHTML("cd")}
+      <div class="row" style="margin:6px 0 14px"><a class="btn gold big" href="#predict">${mine ? "✏️ Edit my prediction" : "⚽ Predict GW" + g.gw}</a>
+      ${mine ? `<span class="pill"><span class="dot"></span>You're in</span>` : ""}</div>
+      ${g.note ? `<div class="msg info">${esc(g.note)}</div>` : ""}
+      <div class="note" style="margin-bottom:8px"><b style="color:var(--ink)">${sub.size}</b> of ${st.players.length} have predicted</div>
+      <div class="chips">${st.players.map((p) => `<span class="chip ${sub.has(p.id) ? "in" : ""}">${esc(p.name)}</span>`).join("")}</div>
+    </div>`;
+  } else {
+    const g = cur.gw, live = !cur.final && g.matches.some((m) => !m.finished);
+    hero = `<div class="hero"><div class="row"><div class="lbl">Gameweek ${g.gw}</div>${live ? `<span class="pill live">Live</span>` : `<span class="pill">Final</span>`}</div>
+      <div class="gwbig" style="font-size:44px;margin-top:6px">GW${g.gw} ${live ? "in play" : "results"}</div>
+      ${podium(cur.rows)}<a class="btn" href="#gw">Full GW${g.gw} table →</a></div>`;
+  }
+  const keep = S.phase; S.phase = "season";
+  const { rows } = aggregate();
+  S.phase = keep;
+  const me = S.session ? rows.find((r) => r.pid === S.session.pid) : null;
+  const top = rows.slice(0, 8);
+  const lastGws = tb.gws.slice(-6).reverse();
+  return hero + `
+  ${me ? `<div class="card pad row" style="gap:18px"><div><div class="lbl note">Your season</div><div class="cond" style="font-size:34px;font-weight:800;color:var(--gold2)">${fmtPts(me.T)} pts</div></div>
+    <div class="pill">Rank <b>#${me.rank}</b> of ${rows.length}</div><div class="pill">GW wins <b>${me.wins}</b></div><div class="pill">Perfect <b>${me.PP}</b></div></div>` : ""}
+  <div class="grid2">
+    <div><h2 class="sec">Overall top 8</h2><div class="card">${top.length ? `<table class="t"><tbody>${top.map((r) => `<tr class="${meCls(r.pid)} ${rkCls(r)}"><td class="rk">${r.rank}</td><td class="name">${esc(r.name)}</td><td class="tot">${fmtPts(r.T)}</td></tr>`).join("")}</tbody></table>` : `<div class="empty">No results yet</div>`}</div>
+      <a class="btn" href="#table">Full table →</a></div>
+    <div><h2 class="sec">GW winners</h2><div class="card">${lastGws.length ? `<table class="t"><tbody>${lastGws.map((g) => { const w = g.rows.filter((r) => r.rank === 1); return `<tr><td class="rk">GW${g.gw}</td><td class="name">${w.map((r) => esc(r.name)).join(", ")}${g.live ? ` <span class="pill live" style="padding:2px 8px">Live</span>` : ""}</td><td class="tot">${w[0] ? fmtPts(w[0].T) : ""}</td></tr>`; }).join("")}</tbody></table>` : `<div class="empty">No results yet</div>`}</div></div>
+  </div>`;
+}
+
+/* ---- login ---- */
+function loginHTML() {
+  const st = S.state;
+  return `<h2 class="sec">Who's predicting?</h2>
+  <div class="card pad" style="max-width:460px">
+    <label class="lab">Your name</label>
+    <select class="sel" id="lgName" style="width:100%"><option value="">Select…</option>${st.players.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</select>
+    <label class="lab" style="margin-top:14px">Passkey</label>
+    <input class="inp" id="lgPin" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit passkey" style="width:100%;letter-spacing:4px;font-size:18px">
+    <div class="row" style="margin-top:16px"><button class="btn gold" id="lgGo">Continue</button>
+      ${st.mail ? `<button class="link" id="lgMail">Don't have it? Email me my passkey</button>` : `<span class="note">No passkey? Ask the admin.</span>`}</div>
+    <div id="lgMsg"></div>
+    <p class="note" style="margin-top:14px">This phone will remember you.</p>
+  </div>`;
+}
+function bindLogin() {
+  const msg = (t, cls = "err") => $("#lgMsg").innerHTML = `<div class="msg ${cls}">${esc(t)}</div>`;
+  $("#lgGo").onclick = async () => {
+    const pid = $("#lgName").value, pin = $("#lgPin").value.trim();
+    if (!pid) return msg("Pick your name");
+    if (!pin) return msg("Enter your passkey");
+    $("#lgGo").disabled = true;
+    try { const r = await api("login", { pid, pin }); S.session = { pid, pin, name: r.name }; ls.set("sffc_session", S.session); whoBox(); render(); }
+    catch (e) { msg(e.message); $("#lgGo").disabled = false; }
+  };
+  const m = $("#lgMail");
+  if (m) m.onclick = async () => {
+    const pid = $("#lgName").value; if (!pid) return msg("Pick your name first");
+    try { const r = await api("send-pin", { pid }); msg(`Sent to ${r.to}. Check spam if it's not there in a minute.`, "ok"); }
+    catch (e) { msg(e.message); }
+  };
+}
+
+/* ---- predict ---- */
+let D = null; // draft
+async function viewPredict() {
+  if (!S.session) return loginHTML();
+  const open = S.state.gws.filter((g) => g.status === "open" && !g.locked).sort((a, b) => a.gw - b.gw)[0];
+  if (!open) {
+    const last = S.state.current;
+    return `<h2 class="sec">Predict</h2><div class="card"><div class="empty"><b>No gameweek is open right now</b>The next one appears here as soon as the admin publishes it.${last ? `<br><br><a class="btn" href="#gw">See GW${last} table</a>` : ""}</div></div>`;
+  }
+  const data = await loadGw(open.gw, true);
+  const g = data.gw;
+  let mine = null;
+  try { mine = (await api("my", { gw: g.gw, pid: S.session.pid, pin: S.session.pin })).pred; }
+  catch (e) { if (/passkey|not found/i.test(e.message)) { ls.del("sffc_session"); S.session = null; whoBox(); return loginHTML() + `<div class="msg err">${esc(e.message)} — please log in again.</div>`; } throw e; }
+  const saved = ls.get("sffc_draft_" + g.gw + "_" + S.session.pid);
+  const src = saved && (!mine || Date.parse(saved.at) > Date.parse(mine.ts)) ? saved : mine;
+  D = { gw: g, scores: {}, joker: src?.joker || null, answers: { ...(src?.answers || {}) }, scenarios: new Set(src?.scenarios || []), savedTs: mine?.ts || null };
+  for (const m of g.matches) { const p = /^(\d+)-(\d+)$/.exec(src?.scores?.[m.id] || ""); D.scores[m.id] = p ? [Number(p[1]), Number(p[2])] : [null, null]; }
+  const picks = S.state.config.scenarioPicks || 3;
+  return `
+  <div class="row" style="margin-top:20px"><span class="pill gw">GW${g.gw}</span><span class="pill">Deadline <b>${when(g.deadline)}</b></span>
+    ${mine ? `<span class="pill"><span class="dot"></span>Saved ${when(mine.ts)}</span>` : `<span class="pill">Not submitted yet</span>`}</div>
+  ${countdownHTML("cd")}
+  ${g.note ? `<div class="msg info">${esc(g.note)}</div>` : ""}
+  <h3 class="sub">Scores <span class="note" style="text-transform:none;letter-spacing:0">— tap J on one match to make it your Joker (double points)</span></h3>
+  <div class="card" id="fxList">${g.matches.map((m) => fixtureRow(m)).join("")}</div>
+  ${g.questions.length ? `<h3 class="sub">Bonus questions</h3><div class="card">${g.questions.map((q) => questionBlock(q, g)).join("")}</div>` : ""}
+  ${g.scenarios.length ? `<h3 class="sub">Scenarios <span class="note" style="text-transform:none;letter-spacing:0">— pick ${picks}. Scenario points are earned only if it happens.</span></h3>
+  <div class="card" id="scnList">${g.scenarios.map((s) => `<div class="scn ${D.scenarios.has(s.n) ? "on" : ""}" data-n="${s.n}"><div class="bx">${D.scenarios.has(s.n) ? "✓" : ""}</div><div class="tx">${esc(s.text)}</div><div class="pv">+${s.points ?? s.n}</div></div>`).join("")}</div>` : ""}
+  <div id="pMsg"></div>
+  <div class="savebar"><button class="btn gold big" id="pSave">${mine ? "Update prediction" : "Submit prediction"}</button><span class="note" id="pStatus"></span></div>`;
+}
+function stepper(id, side, v) {
+  return `<div class="step"><button data-m="${id}" data-s="${side}" data-d="-1">−</button><input data-m="${id}" data-s="${side}" inputmode="numeric" maxlength="2" value="${v ?? ""}" placeholder="–" class="${v == null ? "blank" : ""}"><button data-m="${id}" data-s="${side}" data-d="1">+</button></div>`;
+}
+function fixtureRow(m) {
+  const [h, a] = D.scores[m.id];
+  return `<div class="fx"><div class="tm h">${esc(m.home)}</div><div class="score">${stepper(m.id, 0, h)}<span class="z">:</span>${stepper(m.id, 1, a)}</div><div class="tm">${esc(m.away)}</div>
+  <button class="jbtn ${D.joker === m.id ? "on" : ""}" data-j="${m.id}" title="Joker">J</button>${m.kickoff ? `<div class="ko">${when(m.kickoff)}</div>` : ""}</div>`;
+}
+function questionBlock(q, g) {
+  const v = D.answers[q.id] ?? "";
+  const tol = q.tolerance ? ` <span class="note">(±${q.tolerance} counts)</span>` : "";
+  let input;
+  const opts = q.type === "match" ? g.matches.map(matchLabel) : q.type === "choice" ? q.options : null;
+  if (opts && opts.length) input = `<div class="opts">${opts.map((o) => `<button class="opt ${String(v) === o ? "on" : ""}" data-q="${q.id}" data-v="${esc(o)}">${esc(o)}</button>`).join("")}</div>`;
+  else input = `<input class="inp" data-qi="${q.id}" ${q.type === "number" ? 'inputmode="numeric"' : ""} value="${esc(v)}" placeholder="${q.type === "number" ? "Number" : "Your answer"}" style="width:100%;max-width:320px">`;
+  return `<div class="q"><div class="qt">${esc(q.text)}<small>${q.points} pts</small>${tol}</div>${input}</div>`;
+}
+function persistDraft() {
+  const g = D.gw;
+  ls.set("sffc_draft_" + g.gw + "_" + S.session.pid, { at: new Date().toISOString(), joker: D.joker, answers: D.answers, scenarios: [...D.scenarios],
+    scores: Object.fromEntries(Object.entries(D.scores).filter(([, v]) => v[0] != null && v[1] != null).map(([k, v]) => [k, v.join("-")])) });
+}
+function bindPredict() {
+  if (!D) return;
+  const g = D.gw;
+  startCountdown("cd", g.deadline, () => { S.gw = {}; loadState().then(render); });
+  $("#fxList").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.j) { D.joker = b.dataset.j; document.querySelectorAll(".jbtn").forEach((x) => x.classList.toggle("on", x.dataset.j === D.joker)); persistDraft(); return; }
+    const id = b.dataset.m, s = Number(b.dataset.s), d = Number(b.dataset.d);
+    const cur = D.scores[id][s]; const nv = Math.max(0, Math.min(15, (cur ?? (d > 0 ? -1 : 1)) + d));
+    D.scores[id][s] = nv;
+    const inp = $(`input[data-m="${id}"][data-s="${s}"]`); inp.value = nv; inp.classList.remove("blank"); persistDraft();
+  });
+  $("#fxList").addEventListener("input", (e) => {
+    const i = e.target; if (!i.dataset.m) return;
+    i.value = i.value.replace(/\D/g, "").slice(0, 2);
+    D.scores[i.dataset.m][Number(i.dataset.s)] = i.value === "" ? null : Number(i.value);
+    i.classList.toggle("blank", i.value === ""); persistDraft();
+  });
+  document.querySelectorAll(".opt").forEach((b) => b.onclick = () => {
+    D.answers[b.dataset.q] = b.dataset.v;
+    document.querySelectorAll(`.opt[data-q="${b.dataset.q}"]`).forEach((x) => x.classList.toggle("on", x === b)); persistDraft();
+  });
+  document.querySelectorAll("[data-qi]").forEach((i) => i.oninput = () => { D.answers[i.dataset.qi] = i.value; persistDraft(); });
+  const picks = S.state.config.scenarioPicks || 3;
+  document.querySelectorAll(".scn").forEach((el) => el.onclick = () => {
+    const n = Number(el.dataset.n);
+    if (D.scenarios.has(n)) D.scenarios.delete(n);
+    else { if (D.scenarios.size >= picks) return toast(`Only ${picks} scenarios — untick one first`); D.scenarios.add(n); }
+    el.classList.toggle("on", D.scenarios.has(n)); $(".bx", el).textContent = D.scenarios.has(n) ? "✓" : ""; persistDraft();
+  });
+  $("#pSave").onclick = async () => {
+    const miss = [];
+    for (const m of g.matches) if (D.scores[m.id].some((v) => v == null)) miss.push(matchLabel(m));
+    if (!D.joker) miss.push("your Joker");
+    for (const q of g.questions) if (D.answers[q.id] == null || String(D.answers[q.id]).trim() === "") miss.push("bonus: " + q.text);
+    const need = Math.min(picks, g.scenarios.length);
+    if (D.scenarios.size !== need) miss.push(`${need} scenarios`);
+    if (miss.length) { $("#pMsg").innerHTML = `<div class="msg err"><b>Still missing:</b><br>${miss.map(esc).join("<br>")}</div>`; $("#pMsg").scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+    $("#pSave").disabled = true; $("#pStatus").textContent = "Saving…";
+    try {
+      const r = await api("predict", { gw: g.gw, pid: S.session.pid, pin: S.session.pin, joker: D.joker, answers: D.answers, scenarios: [...D.scenarios],
+        scores: Object.fromEntries(Object.entries(D.scores).map(([k, v]) => [k, v.join("-")])) });
+      ls.del("sffc_draft_" + g.gw + "_" + S.session.pid);
+      $("#pMsg").innerHTML = `<div class="msg ok">✅ GW${g.gw} prediction saved at ${when(r.savedAt)}.${r.emailed ? " A copy is on its way to your email." : ""} You can change it until the deadline.</div>`;
+      $("#pSave").textContent = "Update prediction"; $("#pStatus").textContent = "";
+      S.gw[g.gw] = null; loadState();
+    } catch (e) { $("#pMsg").innerHTML = `<div class="msg err">${esc(e.message)}</div>`; $("#pStatus").textContent = ""; }
+    $("#pSave").disabled = false;
+  };
+}
+
+/* ---- GW table + compare ---- */
+async function viewGw() {
+  const gws = S.state.gws.slice().sort((a, b) => a.gw - b.gw);
+  if (!gws.length) return `<div class="card" style="margin-top:20px"><div class="empty"><b>No gameweeks yet</b></div></div>`;
+  if (!S.gwSel || !gws.some((g) => g.gw === S.gwSel)) {
+    const locked = gws.filter((g) => g.locked);
+    S.gwSel = (locked[locked.length - 1] || gws[gws.length - 1]).gw;
+  }
+  const data = await loadGw(S.gwSel);
+  const g = data.gw;
+  const sel = `<select class="sel" id="gwPick">${gws.map((x) => `<option value="${x.gw}" ${x.gw === S.gwSel ? "selected" : ""}>GW${x.gw}${x.locked ? "" : " (open)"}</option>`).join("")}</select>`;
+  const live = data.locked && !data.final && g.matches.some((m) => !m.finished);
+  const head = `<div class="row" style="margin:20px 0 6px">${sel}${live ? `<span class="pill live">Live</span>` : data.final ? `<span class="pill">Final</span>` : ""}
+    <span class="sp"></span>${data.locked ? `<div class="seg" id="gwSeg"><button data-m="table" class="${S.gwMode === "table" ? "on" : ""}">Table</button><button data-m="compare" class="${S.gwMode === "compare" ? "on" : ""}">Compare all</button></div>` : ""}</div>`;
+  if (!data.locked) {
+    const sub = new Set(data.submitted);
+    return head + `<div class="card pad"><b>GW${g.gw} is open until ${when(g.deadline)}.</b><p class="note">Everyone's picks appear here after the deadline. So far ${sub.size} of ${S.state.players.length} have predicted.</p>
+      <div class="chips">${S.state.players.map((p) => `<span class="chip ${sub.has(p.id) ? "in" : ""}">${esc(p.name)}</span>`).join("")}</div></div>`;
+  }
+  if (live) S.timers.push(setInterval(async () => { if (S.view !== "gw") return; await loadGw(S.gwSel, true); S.tables = null; render(); }, 60000));
+  return head + (S.gwMode === "compare" ? compareTable(data) : gwTable(data));
+}
+function gwTable(data) {
+  const g = data.gw, rows = data.rows;
+  if (!rows.length) return `<div class="card"><div class="empty"><b>No predictions for this GW</b></div></div>`;
+  const qs = g.questions;
+  return podium(rows) + `<div class="card"><div class="scroll"><table class="t"><thead><tr><th class="s1">#</th><th class="name s2">Player</th><th>PP</th><th>GD</th><th>CW</th><th>Joker</th>${qs.map((q, i) => `<th title="${esc(q.text)}">B${i + 1}</th>`).join("")}<th>Scen.</th><th>Total</th></tr></thead><tbody>
+  ${rows.map((r) => `<tr class="${meCls(r.pid)} ${rkCls(r)}"><td class="rk s1">${r.rank}</td><td class="name s2">${esc(r.name)}</td><td>${r.PP || '<span class="z">0</span>'}</td><td>${r.GD || '<span class="z">0</span>'}</td><td>${r.CW || '<span class="z">0</span>'}</td>
+    <td>${r.JR ? `<span class="tag ${r.JR}">${r.JR}</span> +${fmtPts(r.J)}` : '<span class="z">—</span>'}</td>
+    ${qs.map((q) => `<td>${r.bonus?.[q.id] ? `<span class="ok">+${r.bonus[q.id]}</span>` : '<span class="z">0</span>'}</td>`).join("")}
+    <td>${r.S ? "+" + r.S : '<span class="z">0</span>'}</td><td class="tot">${fmtPts(r.T)}</td></tr>`).join("")}
+  </tbody></table></div><div class="legend"><span><span class="tag PP">PP</span> exact score · 3</span><span><span class="tag GD">GD</span> goal difference · 1</span><span><span class="tag CW">CW</span> correct result · 0.5</span><span>Joker doubles its match · ties split on PP, then GD, then CW</span></div></div>`;
+}
+function compareTable(data) {
+  const g = data.gw, rows = data.rows, preds = data.preds;
+  if (!rows.length) return `<div class="card"><div class="empty"><b>No predictions for this GW</b></div></div>`;
+  const ms = g.matches, qs = g.questions, sc = g.scenarios;
+  const res = (m) => (m.h != null && m.a != null ? `${m.h}-${m.a}` : "");
+  const cls = (p, m) => {
+    if (m.h == null || m.a == null || !p) return "";
+    const [ph, pa] = p.split("-").map(Number);
+    if (ph === m.h && pa === m.a) return "exact";
+    if (ph - pa === m.h - m.a) return "gd";
+    if (Math.sign(ph - pa) === Math.sign(m.h - m.a)) return "res";
+    return "miss";
+  };
+  const head = `<tr><th class="s1">#</th><th class="name s2">Player</th>${ms.map((m) => `<th>${esc(m.home)}<br>${esc(m.away)}</th>`).join("")}${qs.map((q, i) => `<th title="${esc(q.text)}">B${i + 1}</th>`).join("")}${sc.map((s) => `<th title="${esc(s.text)}">S${s.n}</th>`).join("")}<th>Total</th></tr>`;
+  const actual = `<tr class="actual"><td class="s1"></td><td class="name s2">Actual</td>${ms.map((m) => `<td>${res(m) || "–"}</td>`).join("")}${qs.map((q) => `<td>${esc(q.answer ?? "–")}</td>`).join("")}${sc.map((s) => `<td>${s.hit === true ? '<span class="ok">✓</span>' : s.hit === false ? '<span class="no">✗</span>' : "–"}</td>`).join("")}<td></td></tr>`;
+  const body = rows.map((r) => {
+    const p = preds[r.pid] || {};
+    const picks = new Set(p.scenarios || []);
+    return `<tr class="${meCls(r.pid)}"><td class="rk s1">${r.rank}</td><td class="name s2">${esc(r.name)}</td>
+      ${ms.map((m) => `<td class="${cls(p.scores?.[m.id], m)} ${p.joker === m.id ? "jk" : ""}">${esc(p.scores?.[m.id] || "–")}</td>`).join("")}
+      ${qs.map((q) => `<td class="${r.bonus?.[q.id] ? "exact" : ""}">${esc(p.answers?.[q.id] ?? "–")}</td>`).join("")}
+      ${sc.map((s) => `<td>${!picks.has(s.n) ? '<span class="na">—</span>' : s.hit === true ? '<span class="ok">✓</span>' : s.hit === false ? '<span class="no">✗</span>' : "●"}</td>`).join("")}
+      <td class="tot">${fmtPts(r.T)}</td></tr>`;
+  }).join("");
+  return `<div class="card"><div class="scroll"><table class="t"><thead>${head}</thead><tbody>${actual}${body}</tbody></table></div>
+  <div class="legend"><span><i style="background:#1f5c3c"></i>Exact / bonus hit</span><span><i style="background:#264a7a"></i>Goal difference</span><span><i style="background:#5a4512"></i>Result</span><span><i style="box-shadow:inset 0 0 0 2px var(--gold)"></i>Joker</span><span><span class="ok">✓</span> picked & happened · <span class="no">✗</span> picked, didn't · <span class="na">—</span> not picked · ● waiting</span></div>
+  <div class="pad note">${qs.map((q, i) => `<b>B${i + 1}</b> ${esc(q.text)}`).join("<br>")}${sc.length ? "<br>" : ""}${sc.map((s) => `<b>S${s.n}</b> (+${s.points ?? s.n}) ${esc(s.text)}`).join("<br>")}</div></div>`;
+}
+
+/* ---- overall ---- */
+async function viewTable() {
+  await loadTables();
+  const { gws, rows } = aggregate();
+  const seg2 = `<div class="seg" id="tmSeg"><button data-m="totals" class="${S.tableMode === "totals" ? "on" : ""}">Totals</button><button data-m="bygw" class="${S.tableMode === "bygw" ? "on" : ""}">By GW</button></div>`;
+  const head = `<div class="row" style="margin:20px 0 6px">${phaseSeg()}<span class="sp"></span>${seg2}</div>`;
+  if (!rows.length) return head + `<div class="card"><div class="empty"><b>No results in this phase yet</b></div></div>`;
+  const last = gws[gws.length - 1];
+  if (S.tableMode === "bygw") {
+    const best = Object.fromEntries(gws.map((g) => [g.gw, Math.max(...g.rows.map((r) => r.T))]));
+    return head + `<div class="card"><div class="scroll"><table class="t"><thead><tr><th class="s1">#</th><th class="name s2">Player</th>${gws.map((g) => `<th>GW${g.gw}</th>`).join("")}<th>Total</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr class="${meCls(r.pid)} ${rkCls(r)}"><td class="rk s1">${r.rank}</td><td class="name s2">${esc(r.name)}</td>${gws.map((g) => { const v = r.byGw[g.gw]; return v == null ? `<td class="z">–</td>` : `<td class="${v === best[g.gw] ? "exact" : ""}">${fmtPts(v)}</td>`; }).join("")}<td class="tot">${fmtPts(r.T)}</td></tr>`).join("")}
+    </tbody></table></div><div class="legend"><span><i style="background:#1f5c3c"></i>GW winner</span><span>– didn't play</span></div></div>`;
+  }
+  return head + podium(rows) + `<div class="card"><div class="scroll"><table class="t"><thead><tr><th class="s1">#</th><th class="name s2">Player</th><th title="Gameweeks played">P</th><th>PP</th><th>GD</th><th>CW</th><th>Joker</th><th>B1</th><th>B2</th><th>Scen.</th><th title="GW wins">Wins</th><th>${last ? "GW" + last.gw : "Last"}</th><th>Total</th></tr></thead><tbody>
+  ${rows.map((r) => `<tr class="${meCls(r.pid)} ${rkCls(r)}"><td class="rk s1">${r.rank}</td><td class="name s2">${esc(r.name)}</td><td>${r.P}</td><td>${r.PP}</td><td>${r.GD}</td><td>${r.CW}</td><td>${fmtPts(r.J)}</td><td>${r.b1}</td><td>${r.b2}</td><td>${r.S}</td><td>${r.wins || '<span class="z">0</span>'}</td><td>${last && r.byGw[last.gw] != null ? fmtPts(r.byGw[last.gw]) : '<span class="z">–</span>'}</td><td class="tot">${fmtPts(r.T)}</td></tr>`).join("")}
+  </tbody></table></div><div class="legend"><span>P played · PP/GD/CW = how many matches · Joker = Joker points · B1/B2 = bonus answers right · Scen. = scenario points</span>${S.tables.gws.some((g) => g.live) ? `<span class="pill live" style="padding:2px 8px">Includes live GW</span>` : ""}</div></div>`;
+}
+
+/* ---- stats ---- */
+async function viewStats() {
+  await loadTables();
+  const { rows } = aggregate();
+  const pts = S.state.config.points || { pp: 3, gd: 1, cw: 0.5 };
+  const mk = (title, sub, cols, key, list) => {
+    const sorted = list.slice().sort((a, b) => b[key] - a[key] || a.name.localeCompare(b.name));
+    sorted.forEach((r, i) => r._rk = i && sorted[i - 1][key] === r[key] ? sorted[i - 1]._rk : i + 1);
+    return `<div><h3 class="sub">${title}</h3><p class="note" style="margin:-4px 0 8px">${sub}</p><div class="card"><div class="scroll" style="max-height:420px"><table class="t"><thead><tr><th>#</th><th class="name">Player</th>${cols.map((c) => `<th>${c[0]}</th>`).join("")}<th>Pts</th></tr></thead><tbody>
+    ${sorted.map((r) => `<tr class="${meCls(r.pid)} ${r._rk <= 3 ? "r" + r._rk : ""}"><td class="rk">${r._rk}</td><td class="name">${esc(r.name)}</td>${cols.map((c) => `<td>${r[c[1]]}</td>`).join("")}<td class="tot">${fmtPts(r[key])}</td></tr>`).join("")}</tbody></table></div></div></div>`;
+  };
+  rows.forEach((r) => { r.predPts = r.PP * pts.pp + r.GD * pts.gd + r.CW * pts.cw; });
+  return `<div class="row" style="margin:20px 0 0">${phaseSeg()}</div>` + (rows.length ? `<div class="grid2">
+    ${mk("Prediction table", "Score predictions only — no Joker, bonus or scenarios", [["PP", "PP"], ["GD", "GD"], ["CW", "CW"]], "predPts", rows)}
+    ${mk("Joker table", "Points from the Joker match", [["PP", "JPP"], ["GD", "JGD"], ["CW", "JCW"]], "J", rows)}
+    ${mk("Bonus table", "Bonus question points", [["B1", "b1"], ["B2", "b2"]], "B", rows)}
+    ${mk("Scenario table", "Scenario points (and how many came off)", [["Hits", "SC"]], "S", rows)}
+  </div>` : `<div class="card"><div class="empty"><b>No results in this phase yet</b></div></div>`);
+}
+
+function viewRules() {
+  const p = S.state.config.points || { pp: 3, gd: 1, cw: 0.5 };
+  const picks = S.state.config.scenarioPicks || 3;
+  return `<h2 class="sec">How points work</h2>
+  <div class="rgrid">
+    <div class="rule"><div class="big">${p.pp}</div><h3>Perfect prediction</h3><p>Exact scoreline. No extra GD or CW points on top.</p></div>
+    <div class="rule"><div class="big">${p.gd}</div><h3>Goal difference</h3><p>Right result and right margin — you said 2-1, it ended 3-2. Draws count: 1-1 vs 0-0.</p></div>
+    <div class="rule"><div class="big">${p.cw}</div><h3>Correct winner</h3><p>Right result (home win, away win or draw) but not the margin.</p></div>
+    <div class="rule"><div class="big">×2</div><h3>The Joker</h3><p>Pick one match each week; whatever it earns counts twice. A perfect Joker is worth ${p.pp * 2}.</p></div>
+    <div class="rule"><div class="big">B1 · B2</div><h3>Bonus questions</h3><p>Two extra questions each week, worth the points shown next to them (usually 2 and 3). Number questions may allow a ± range.</p></div>
+    <div class="rule"><div class="big">${picks} of 5</div><h3>Scenarios</h3><p>Pick ${picks}. Scenario 1 is worth 1 point, scenario 2 is worth 2 … scenario 5 is worth 5 — but only if it happens. No minus points.</p></div>
+  </div>
+  <h2 class="sec">Ties & deadlines</h2>
+  <div class="card pad note">
+    • Level on points? Compared on Perfect predictions, then Goal differences, then Correct winners. Bonus isn't used. If still level, the prize is shared.<br>
+    • Predictions lock at the GW deadline and are never reopened mid-GW.<br>
+    • Nobody can see anyone else's picks until the deadline — then everything is on the GW Table → Compare all.<br>
+    • Scores update live from the Premier League during the GW.
+  </div>`;
+}
+
+/* ============ router ============ */
+const VIEWS = { home: viewHome, predict: viewPredict, gw: viewGw, table: viewTable, stats: viewStats, rules: viewRules };
+async function render() {
+  clearTimers();
+  D = null;
+  document.querySelectorAll("#tabs a").forEach((a) => a.classList.toggle("on", a.dataset.v === S.view));
+  try {
+    $("#main").innerHTML = await VIEWS[S.view]();
+  } catch (e) {
+    $("#main").innerHTML = `<div class="msg err" style="margin-top:20px">${esc(e.message)}</div>`;
+    return;
+  }
+  stickyFix();
+  if (S.view === "home") { const cur = S.state.current && S.gw[S.state.current]; if (cur && !cur.locked) startCountdown("cd", cur.gw.deadline, () => { S.gw = {}; loadState().then(render); }); }
+  if (S.view === "predict") { if (!S.session) bindLogin(); else bindPredict(); }
+  if (S.view === "gw") {
+    const p = $("#gwPick"); if (p) p.onchange = () => { S.gwSel = Number(p.value); render(); };
+    document.querySelectorAll("#gwSeg button").forEach((b) => b.onclick = () => { S.gwMode = b.dataset.m; render(); });
+  }
+  if (S.view === "table") { bindPhase(); document.querySelectorAll("#tmSeg button").forEach((b) => b.onclick = () => { S.tableMode = b.dataset.m; render(); }); }
+  if (S.view === "stats") bindPhase();
+}
+function route() {
+  const v = (location.hash || "#home").slice(1);
+  S.view = VIEWS[v] ? v : "home";
+  window.scrollTo(0, 0);
+  render();
+}
+(async () => {
+  try { await loadState(); } catch (e) { $("#main").innerHTML = `<div class="msg err" style="margin-top:20px">Couldn't reach the server: ${esc(e.message)}</div>`; return; }
+  $("#season").textContent = `${S.state.config.name} · ${S.state.config.season}`;
+  whoBox();
+  window.addEventListener("hashchange", route);
+  route();
+})();
+</script>
+</body>
+</html>

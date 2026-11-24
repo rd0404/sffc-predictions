@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin · SFFC Predictor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+  .ed table{width:100%;border-collapse:collapse}
+  .ed td,.ed th{padding:6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  .ed th{font:700 12px Inter;color:var(--mute);text-transform:uppercase;letter-spacing:.6px}
+  .ed input.inp,.ed select.sel,.ed textarea.inp{width:100%;padding:7px 9px}
+  .ed .n{width:58px}
+  .ed select.sel{min-width:110px}
+  .x{background:none;border:0;color:var(--red);cursor:pointer;font-size:18px}
+  .out{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:13px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;max-height:320px;overflow:auto}
+  .k{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+  .badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;background:var(--panel3)}
+  .badge.open{background:#173a29;color:#bff5d6}.badge.final{background:#2a1f4a;color:#d8c8ff}.badge.draft{background:#3a2a10;color:#ffe7a6}
+</style>
+</head>
+<body>
+<header><div class="wrap"><div class="top">
+  <div class="brand"><h1>SFFC <span>Predictor</span> · Admin</h1><p>Fixtures, results, players and data</p></div><div class="sp"></div>
+  <a class="btn sm" href="/">← Site</a></div>
+  <nav class="tabs" id="tabs"><a data-v="gws" class="on">Gameweeks</a><a data-v="players">Players</a><a data-v="settings">Settings</a><a data-v="data">Data</a></nav>
+</div></header>
+<main class="wrap" id="main"></main>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+let KEY = (() => { try { return sessionStorage.getItem("sffc_admin") || ""; } catch { return ""; } })();
+const A = { view: "gws", ov: null, edit: null, preds: null };
+
+async function adm(action, body = {}) {
+  const r = await fetch("/api/admin/" + action, { method: "POST", headers: { "Content-Type": "application/json", "x-admin-key": KEY }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({ error: "Bad response" }));
+  if (r.status === 401) { KEY = ""; try { sessionStorage.removeItem("sffc_admin"); } catch {} }
+  if (!r.ok) throw new Error(j.error || "Failed");
+  return j;
+}
+function toast(t) { const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.appendChild(d); setTimeout(() => d.remove(), 2800); }
+const toLocalInput = (iso) => { if (!iso) return ""; const d = new Date(iso); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
+const when = (iso) => iso ? new Date(iso).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+async function copy(t) { try { await navigator.clipboard.writeText(t); toast("Copied"); } catch { toast("Select and copy manually"); } }
+
+function loginView() {
+  $("#main").innerHTML = `<div class="card pad" style="max-width:420px;margin-top:30px"><label class="lab">Admin key</label>
+  <input class="inp" id="k" type="password" style="width:100%"><div class="row" style="margin-top:12px"><button class="btn gold" id="go">Enter</button></div><div id="m"></div>
+  <p class="note">This is the ADMIN_KEY you set in Netlify → Site configuration → Environment variables.</p></div>`;
+  $("#go").onclick = async () => { KEY = $("#k").value.trim(); try { await load(); try { sessionStorage.setItem("sffc_admin", KEY); } catch {} render(); } catch (e) { $("#m").innerHTML = `<div class="msg err">${esc(e.message)}</div>`; } };
+}
+async function load() { A.ov = await adm("overview"); }
+
+/* ---------------- gameweeks ---------------- */
+function gwList() {
+  const gws = A.ov.gws.slice().sort((a, b) => b.gw - a.gw);
+  const next = gws.length ? Math.min(38, gws[0].gw + 1) : 1;
+  return `<h2 class="sec">Gameweeks</h2>
+  <div class="card pad"><div class="row"><label class="lab" style="margin:0">Set up GW</label><input class="inp n" id="newGw" type="number" min="1" max="38" value="${next}" style="width:80px">
+    <button class="btn gold" id="fplImp">Load fixtures + deadline from FPL</button><button class="btn" id="blank">Start blank</button></div>
+    <p class="note">FPL fills the 10 matches and the official deadline, and keeps live scores coming in. Add the bonus questions and scenarios, then set the status to <b>Open</b>.</p></div>
+  <div class="card"><table class="t"><thead><tr><th>GW</th><th>Status</th><th>Deadline</th><th>Matches</th><th>Predictions</th><th></th></tr></thead><tbody>
+  ${gws.map((g) => `<tr><td class="cond" style="font-size:18px;font-weight:800">GW${g.gw}</td><td><span class="badge ${g.status}">${g.status}${g.imported ? " · imported" : ""}</span></td><td>${when(g.deadline)}</td><td>${g.matches?.length || 0}</td><td>${A.ov.counts[g.gw] || 0}</td><td><button class="btn sm" data-edit="${g.gw}">Open</button></td></tr>`).join("") || `<tr><td colspan="6" class="note">No gameweeks yet</td></tr>`}
+  </tbody></table></div>`;
+}
+function bindGwList() {
+  $("#fplImp").onclick = async () => { const n = Number($("#newGw").value); try { const r = await adm("fpl-import", { gw: n }); await load(); openGw(n); toast(`GW${n}: ${r.gw.matches.length} fixtures loaded`); } catch (e) { toast(e.message); } };
+  $("#blank").onclick = async () => { const n = Number($("#newGw").value); if (A.ov.gws.some((g) => g.gw === n)) return openGw(n);
+    A.edit = { gw: n, status: "draft", deadline: null, note: "", matches: [], questions: defaultQs(), scenarios: defaultScn() }; render(); };
+  document.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => openGw(Number(b.dataset.edit)));
+}
+const defaultQs = () => [{ id: "b1", text: "", type: "number", points: 2, tolerance: null, answer: null, options: [] }, { id: "b2", text: "", type: "number", points: 3, tolerance: null, answer: null, options: [] }];
+const defaultScn = () => [1, 2, 3, 4, 5].map((n) => ({ n, text: "", hit: null, points: null }));
+async function openGw(n) {
+  const g = A.ov.gws.find((x) => x.gw === n);
+  A.edit = JSON.parse(JSON.stringify(g));
+  if (!A.edit.questions?.length) A.edit.questions = defaultQs();
+  if (!A.edit.scenarios?.length) A.edit.scenarios = defaultScn();
+  A.preds = (await adm("preds", { gw: n })).preds;
+  render();
+}
+
+function editor() {
+  const g = A.edit, fin = g.status === "final";
+  const dis = fin ? "disabled" : "";
+  return `<div class="row" style="margin-top:20px"><button class="btn sm" id="back">← All GWs</button><span class="pill gw">GW${g.gw}</span><span class="badge ${g.status}">${g.status}</span><span class="sp"></span>
+    ${fin ? `<button class="btn red sm" id="unlock">Unlock to edit</button>` : `<button class="btn purple sm" id="final">Finalise GW (lock scores)</button>`}</div>
+  ${fin ? `<div class="msg info">This GW is finalised: its points are frozen and won't change even if FPL data changes. Unlock only to correct a mistake, then finalise again.</div>` : ""}
+  <div class="card pad ed" style="margin-top:14px"><div class="k">
+    <div><label class="lab">Status</label><select class="sel" id="eStatus" ${dis}><option value="draft" ${g.status === "draft" ? "selected" : ""}>Draft (hidden)</option><option value="open" ${g.status === "open" ? "selected" : ""}>Open (published)</option>${fin ? `<option selected>final</option>` : ""}</select></div>
+    <div><label class="lab">Deadline (your time)</label><input class="inp" type="datetime-local" id="eDeadline" value="${toLocalInput(g.deadline)}" ${dis}></div>
+    <div style="grid-column:1/-1"><label class="lab">Note shown to players (optional)</label><input class="inp" id="eNote" value="${esc(g.note || "")}" ${dis}></div></div></div>
+
+  <h3 class="sub">Matches & scores</h3>
+  <div class="card pad ed"><table><thead><tr><th>Home</th><th>Away</th><th>H</th><th>A</th><th title="Typed by you; FPL won't overwrite">Manual</th><th>Kick-off</th><th></th></tr></thead><tbody id="mRows">
+  ${g.matches.map((m, i) => `<tr data-i="${i}"><td><input class="inp" data-f="home" value="${esc(m.home)}" ${dis}></td><td><input class="inp" data-f="away" value="${esc(m.away)}" ${dis}></td>
+    <td><input class="inp n" data-f="h" inputmode="numeric" value="${m.h ?? ""}" ${dis}></td><td><input class="inp n" data-f="a" inputmode="numeric" value="${m.a ?? ""}" ${dis}></td>
+    <td><input type="checkbox" data-f="manual" ${m.manual ? "checked" : ""} ${dis}></td><td class="note">${m.kickoff ? when(m.kickoff) : m.fplId ? "" : "manual match"}${m.finished ? " · FT" : ""}</td><td>${fin ? "" : `<button class="x" data-rm="${i}">×</button>`}</td></tr>`).join("")}
+  </tbody></table>
+  ${fin ? "" : `<div class="row" style="margin-top:10px"><button class="btn sm" id="addM">+ Add match</button><button class="btn sm" id="refresh">↻ Pull live scores from FPL</button><span class="note">Last pulled: ${when(g.scoresFetchedAt)}</span></div>`}</div>
+
+  <h3 class="sub">Bonus questions</h3>
+  <div class="card pad ed"><table><thead><tr><th style="width:38%">Question</th><th>Type</th><th>Options (for choice)</th><th>Pts</th><th>±</th><th>Answer</th><th></th></tr></thead><tbody id="qRows">
+  ${g.questions.map((q, i) => `<tr data-i="${i}"><td><textarea class="inp" rows="2" data-f="text" ${dis}>${esc(q.text)}</textarea></td>
+    <td><select class="sel" data-f="type" ${dis}>${[["number", "Number"], ["text", "Text"], ["choice", "Choice"], ["match", "A match"]].map(([v, l]) => `<option value="${v}" ${q.type === v ? "selected" : ""}>${l}</option>`).join("")}</select></td>
+    <td><textarea class="inp" rows="2" data-f="options" placeholder="One per line" ${dis}>${esc((q.options || []).join("\n"))}</textarea></td>
+    <td><input class="inp n" data-f="points" value="${q.points ?? ""}" ${dis}></td><td><input class="inp n" data-f="tolerance" value="${q.tolerance ?? ""}" placeholder="0" ${dis}></td>
+    <td><input class="inp" data-f="answer" value="${esc(q.answer ?? "")}" placeholder="after GW" ${dis}></td><td>${fin ? "" : `<button class="x" data-rq="${i}">×</button>`}</td></tr>`).join("")}
+  </tbody></table>${fin ? "" : `<button class="btn sm" id="addQ" style="margin-top:10px">+ Add question</button>`}
+  <p class="note">“A match” gives players the GW's fixtures to pick from — type the answer as e.g. <b>HUL v BRE</b>. Number answers count if within ± of the actual.</p></div>
+
+  <h3 class="sub">Scenarios</h3>
+  <div class="card pad ed"><table><thead><tr><th>#</th><th style="width:60%">Scenario</th><th>Points</th><th>Happened?</th></tr></thead><tbody id="sRows">
+  ${g.scenarios.map((s, i) => `<tr data-i="${i}"><td class="cond" style="font-weight:800;font-size:18px">S${s.n}</td><td><input class="inp" data-f="text" value="${esc(s.text)}" ${dis}></td><td><input class="inp n" data-f="points" value="${s.points ?? ""}" placeholder="${s.n}" ${dis}></td>
+    <td><select class="sel" data-f="hit" ${dis}><option value="">Not yet</option><option value="y" ${s.hit === true ? "selected" : ""}>Yes ✓</option><option value="n" ${s.hit === false ? "selected" : ""}>No ✗</option></select></td></tr>`).join("")}
+  </tbody></table></div>
+
+  ${fin ? "" : `<div class="savebar"><button class="btn gold big" id="save">Save GW${g.gw}</button><button class="btn red sm" id="del">Delete GW</button></div>`}
+
+  <h3 class="sub">Predictions (${Object.keys(A.preds || {}).length})</h3>
+  <div class="card"><table class="t"><thead><tr><th class="name">Player</th><th>Submitted</th><th>Joker</th><th></th></tr></thead><tbody>
+  ${A.ov.players.filter((p) => p.active).map((p) => { const pr = A.preds?.[p.id]; return `<tr><td class="name">${esc(p.name)}</td><td>${pr ? when(pr.ts) + (pr.byAdmin ? " · by admin" : "") : '<span class="z">—</span>'}</td><td>${esc(pr?.joker || "")}</td>
+    <td>${fin ? "" : `<button class="btn sm" data-pe="${p.id}">${pr ? "Edit" : "Enter"}</button>${pr ? ` <button class="btn sm red" data-pd="${p.id}">Remove</button>` : ""}`}</td></tr>`; }).join("")}
+  </tbody></table></div><div id="pEdit"></div>`;
+}
+function readEditor() {
+  const g = A.edit;
+  if (g.status === "final") return g;
+  g.status = $("#eStatus").value;
+  const dl = $("#eDeadline").value; g.deadline = dl ? new Date(dl).toISOString() : null;
+  g.note = $("#eNote").value;
+  document.querySelectorAll("#mRows tr").forEach((tr) => { const m = g.matches[tr.dataset.i]; tr.querySelectorAll("[data-f]").forEach((el) => m[el.dataset.f] = el.type === "checkbox" ? el.checked : el.value); });
+  document.querySelectorAll("#qRows tr").forEach((tr) => { const q = g.questions[tr.dataset.i]; tr.querySelectorAll("[data-f]").forEach((el) => q[el.dataset.f] = el.dataset.f === "options" ? el.value.split("\n").map((s) => s.trim()).filter(Boolean) : el.value); });
+  document.querySelectorAll("#sRows tr").forEach((tr) => { const s = g.scenarios[tr.dataset.i]; tr.querySelectorAll("[data-f]").forEach((el) => { s[el.dataset.f] = el.dataset.f === "hit" ? (el.value === "y" ? true : el.value === "n" ? false : null) : el.value; }); });
+  return g;
+}
+function bindEditor() {
+  const g = A.edit;
+  $("#back").onclick = () => { A.edit = null; render(); };
+  const un = $("#unlock"); if (un) un.onclick = async () => { try { await adm("unlock", { gw: g.gw }); await load(); await openGw(g.gw); toast("Unlocked"); } catch (e) { toast(e.message); } };
+  const fi = $("#final"); if (fi) fi.onclick = async () => {
+    try { await adm("save-gw", { gw: readEditor() }); const r = await adm("finalize", { gw: g.gw }); await load(); await openGw(g.gw); toast(`GW${g.gw} finalised · winner ${r.rows[0]?.name || "—"}`); } catch (e) { toast(e.message); } };
+  if (g.status === "final") { bindPredButtons(); return; }
+  document.querySelectorAll("#mRows [data-f='h'],#mRows [data-f='a']").forEach((el) => el.oninput = () => { el.closest("tr").querySelector("[data-f='manual']").checked = true; });
+  $("#addM").onclick = () => { readEditor(); g.matches.push({ home: "", away: "", h: null, a: null, manual: true }); render(); };
+  document.querySelectorAll("[data-rm]").forEach((b) => b.onclick = () => { readEditor(); g.matches.splice(Number(b.dataset.rm), 1); render(); });
+  $("#addQ").onclick = () => { readEditor(); g.questions.push({ id: "b" + (g.questions.length + 1), text: "", type: "text", points: 1, options: [] }); render(); };
+  document.querySelectorAll("[data-rq]").forEach((b) => b.onclick = () => { readEditor(); g.questions.splice(Number(b.dataset.rq), 1); render(); });
+  $("#refresh").onclick = async () => { try { readEditor(); await adm("save-gw", { gw: g }); const r = await adm("refresh", { gw: g.gw }); A.edit = r.gw; await load(); render(); toast("Scores pulled from FPL"); } catch (e) { toast(e.message); } };
+  $("#save").onclick = async () => {
+    const gw = readEditor();
+    if (gw.status === "open" && !gw.deadline) return toast("Set a deadline before opening");
+    try { const r = await adm("save-gw", { gw }); A.edit = r.gw; await load(); render(); toast(`GW${gw.gw} saved`); } catch (e) { toast(e.message); } };
+  $("#del").onclick = async () => {
+    const n = Object.keys(A.preds || {}).length;
+    const ok = n ? $("#del").dataset.sure === "1" : true;
+    if (!ok) { $("#del").dataset.sure = "1"; $("#del").textContent = `Really delete GW${g.gw} and ${n} predictions?`; return; }
+    try { await adm("delete-gw", { gw: g.gw, force: true }); A.edit = null; await load(); render(); toast("Deleted"); } catch (e) { toast(e.message); } };
+  bindPredButtons();
+}
+function bindPredButtons() {
+  const g = A.edit;
+  document.querySelectorAll("[data-pd]").forEach((b) => b.onclick = async () => { try { await adm("delete-pred", { gw: g.gw, pid: b.dataset.pd }); A.preds = (await adm("preds", { gw: g.gw })).preds; await load(); render(); } catch (e) { toast(e.message); } });
+  document.querySelectorAll("[data-pe]").forEach((b) => b.onclick = () => predEditor(b.dataset.pe));
+}
+function predEditor(pid) {
+  const g = A.edit, p = A.ov.players.find((x) => x.id === pid), pr = A.preds?.[pid] || {};
+  $("#pEdit").innerHTML = `<div class="card pad ed"><h3 class="sub" style="margin-top:0">${esc(p.name)} — GW${g.gw} (entered by admin)</h3>
+  <table><tbody>${g.matches.map((m) => `<tr><td>${esc(m.home)} v ${esc(m.away)}</td><td><input class="inp" style="width:90px" data-ps="${m.id}" value="${esc(pr.scores?.[m.id] || "")}" placeholder="2-1"></td><td><label><input type="radio" name="pj" value="${m.id}" ${pr.joker === m.id ? "checked" : ""}> Joker</label></td></tr>`).join("")}</tbody></table>
+  ${g.questions.map((q) => `<label class="lab" style="margin-top:10px">${esc(q.text)}</label><input class="inp" data-pa="${q.id}" value="${esc(pr.answers?.[q.id] ?? "")}" style="max-width:320px">`).join("")}
+  <label class="lab" style="margin-top:10px">Scenarios</label>${g.scenarios.map((s) => `<label style="display:block;margin:4px 0"><input type="checkbox" data-pc="${s.n}" ${(pr.scenarios || []).includes(s.n) ? "checked" : ""}> S${s.n} ${esc(s.text)}</label>`).join("")}
+  <div class="row" style="margin-top:12px"><button class="btn gold" id="pSave">Save for ${esc(p.name)}</button><button class="btn" id="pCancel">Cancel</button></div></div>`;
+  $("#pEdit").scrollIntoView({ behavior: "smooth" });
+  $("#pCancel").onclick = () => $("#pEdit").innerHTML = "";
+  $("#pSave").onclick = async () => {
+    const pred = { scores: {}, answers: {}, scenarios: [], joker: ($("input[name=pj]:checked") || {}).value };
+    document.querySelectorAll("[data-ps]").forEach((i) => pred.scores[i.dataset.ps] = i.value.trim());
+    document.querySelectorAll("[data-pa]").forEach((i) => pred.answers[i.dataset.pa] = i.value.trim());
+    document.querySelectorAll("[data-pc]:checked").forEach((i) => pred.scenarios.push(Number(i.dataset.pc)));
+    try { await adm("set-pred", { gw: g.gw, pid, pred }); A.preds = (await adm("preds", { gw: g.gw })).preds; await load(); render(); toast("Saved"); } catch (e) { toast(e.message); }
+  };
+}
+
+/* ---------------- players ---------------- */
+function playersView() {
+  const ps = A.ov.players.slice().sort((a, b) => a.name.localeCompare(b.name));
+  return `<h2 class="sec">Players (${ps.filter((p) => p.active).length} active)</h2>
+  <div class="card pad"><div class="row"><button class="btn gold" id="pinsMissing">Issue passkeys to everyone without one</button>
+    <span class="note">${A.ov.mail ? "Email is on: players can also tap “Email me my passkey” on the Predict page." : "Email is off: send each player their passkey yourself (WhatsApp DM)."}</span></div><div id="pinOut"></div></div>
+  <div class="card pad ed"><table><thead><tr><th>Name (as shown)</th><th>Email</th><th>Active</th><th>Passkey</th><th></th></tr></thead><tbody>
+  ${ps.map((p) => `<tr data-id="${p.id}"><td><input class="inp" data-f="name" value="${esc(p.name)}"></td><td><input class="inp" data-f="email" value="${esc(p.email || "")}"></td><td><input type="checkbox" data-f="active" ${p.active ? "checked" : ""}></td>
+    <td>${p.hasPin ? '<span class="ok">set</span>' : '<span class="z">none</span>'}</td><td style="white-space:nowrap"><button class="btn sm" data-sv="${p.id}">Save</button> <button class="btn sm" data-pin="${p.id}">New passkey</button></td></tr>`).join("")}
+  <tr><td><input class="inp" id="nName" placeholder="New player, e.g. Rohit D"></td><td><input class="inp" id="nEmail" placeholder="email (optional)"></td><td></td><td></td><td><button class="btn sm gold" id="nAdd">Add</button></td></tr>
+  </tbody></table></div>`;
+}
+function showPins(pins) {
+  const txt = pins.map((p) => `${p.name}: ${p.pin}`).join("\n");
+  $("#pinOut").innerHTML = `<p class="note" style="margin-top:14px">Passkeys are shown only once. Send each one privately.</p><div class="out">${esc(txt)}</div>
+  <div class="row" style="margin-top:8px"><button class="btn sm" id="cp">Copy all</button>${pins.length === 1 ? `<button class="btn sm" id="cpMsg">Copy WhatsApp message</button>` : ""}</div>`;
+  $("#cp").onclick = () => copy(txt);
+  const m = $("#cpMsg"); if (m) m.onclick = () => copy(`Hi ${pins[0].name}! Your SFFC Predictor passkey is ${pins[0].pin}. Predict here: ${location.origin}/#predict`);
+}
+function bindPlayers() {
+  $("#pinsMissing").onclick = async () => { try { const r = await adm("reset-pin", { pid: "*missing" }); await load(); render(); showPins(r.pins); } catch (e) { toast(e.message); } };
+  document.querySelectorAll("[data-sv]").forEach((b) => b.onclick = async () => {
+    const tr = b.closest("tr"); try { await adm("save-player", { id: tr.dataset.id, name: $("[data-f=name]", tr).value, email: $("[data-f=email]", tr).value, active: $("[data-f=active]", tr).checked }); await load(); toast("Saved"); } catch (e) { toast(e.message); } });
+  document.querySelectorAll("[data-pin]").forEach((b) => b.onclick = async () => { try { const r = await adm("reset-pin", { pid: b.dataset.pin }); await load(); render(); showPins(r.pins); } catch (e) { toast(e.message); } });
+  $("#nAdd").onclick = async () => { try { await adm("save-player", { name: $("#nName").value, email: $("#nEmail").value, active: true }); await load(); render(); toast("Added"); } catch (e) { toast(e.message); } };
+}
+
+/* ---------------- settings ---------------- */
+function settingsView() {
+  const c = A.ov.config;
+  return `<h2 class="sec">Settings</h2><div class="card pad ed"><div class="k">
+    <div><label class="lab">League name</label><input class="inp" id="cName" value="${esc(c.name)}"></div>
+    <div><label class="lab">Season</label><input class="inp" id="cSeason" value="${esc(c.season)}"></div>
+    <div><label class="lab">Scenarios each player picks</label><input class="inp n" id="cPicks" value="${c.scenarioPicks}"></div></div>
+    <h3 class="sub">Phases</h3><table><thead><tr><th>Name</th><th>From GW</th><th>To GW</th></tr></thead><tbody id="phRows">
+    ${c.phases.map((p) => `<tr data-id="${esc(p.id)}"><td><input class="inp" data-f="name" value="${esc(p.name)}"></td><td><input class="inp n" data-f="from" value="${p.from}"></td><td><input class="inp n" data-f="to" value="${p.to}"></td></tr>`).join("")}
+    </tbody></table><div class="row" style="margin-top:14px"><button class="btn gold" id="cSave">Save settings</button></div>
+    <p class="note">Points: exact score ${c.points.pp}, goal difference ${c.points.gd}, correct result ${c.points.cw}. Bonus points are set per question; scenario N is worth N unless you set its points.</p></div>`;
+}
+function bindSettings() {
+  $("#cSave").onclick = async () => {
+    const phases = [...document.querySelectorAll("#phRows tr")].map((tr) => ({ id: tr.dataset.id, name: $("[data-f=name]", tr).value, from: Number($("[data-f=from]", tr).value), to: Number($("[data-f=to]", tr).value) }));
+    try { await adm("save-config", { config: { name: $("#cName").value, season: $("#cSeason").value, scenarioPicks: Number($("#cPicks").value), phases } }); await load(); toast("Saved"); } catch (e) { toast(e.message); } };
+}
+
+/* ---------------- data ---------------- */
+function dataView() {
+  return `<h2 class="sec">Data</h2>
+  <div class="grid2"><div class="card pad"><h3 class="sub" style="margin-top:0">Import GW1–10 history</h3><p class="note">Load <b>sffc-history-gw1-10.json</b> once. It adds the 36 players and their GW1–10 predictions as finalised gameweeks, scored exactly like the old sheet.</p>
+    <input type="file" id="hFile" accept=".json"><div id="hOut"></div></div>
+  <div class="card pad"><h3 class="sub" style="margin-top:0">Backup</h3><p class="note">Download everything (players, GWs, predictions) as one file. Do this every few weeks.</p>
+    <button class="btn gold" id="exp">Download backup</button>
+    <h3 class="sub">Restore</h3><p class="note">Writes every record in a backup file back to the site.</p><input type="file" id="rFile" accept=".json"><div id="rOut"></div></div></div>`;
+}
+function bindData() {
+  const readFile = (inp) => new Promise((res, rej) => { const f = inp.files[0]; if (!f) return rej(new Error("No file")); const r = new FileReader(); r.onload = () => { try { res(JSON.parse(r.result)); } catch { rej(new Error("Not a valid JSON file")); } }; r.readAsText(f); });
+  $("#hFile").onchange = async () => { $("#hOut").innerHTML = `<p class="note">Importing…</p>`; try { const data = await readFile($("#hFile")); const r = await adm("import-history", { data }); await load(); $("#hOut").innerHTML = `<div class="msg ok">Imported ${r.gws} gameweeks and ${r.preds} predictions. ${r.players} players in total.</div>`; } catch (e) { $("#hOut").innerHTML = `<div class="msg err">${esc(e.message)}</div>`; } };
+  $("#exp").onclick = async () => { try { const r = await adm("export"); const blob = new Blob([JSON.stringify(r)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `sffc-predictor-backup-${r.exportedAt.slice(0, 10)}.json`; a.click(); } catch (e) { toast(e.message); } };
+  $("#rFile").onchange = async () => { try { const data = await readFile($("#rFile")); const r = await adm("restore", { data }); await load(); $("#rOut").innerHTML = `<div class="msg ok">Restored ${r.keys} records.</div>`; } catch (e) { $("#rOut").innerHTML = `<div class="msg err">${esc(e.message)}</div>`; } };
+}
+
+/* ---------------- router ---------------- */
+async function render() {
+  if (!KEY || !A.ov) return loginView();
+  document.querySelectorAll("#tabs a").forEach((a) => a.classList.toggle("on", a.dataset.v === A.view));
+  const V = { gws: [() => (A.edit ? editor() : gwList()), () => (A.edit ? bindEditor() : bindGwList())], players: [playersView, bindPlayers], settings: [settingsView, bindSettings], data: [dataView, bindData] }[A.view];
+  $("#main").innerHTML = V[0](); V[1]();
+}
+document.querySelectorAll("#tabs a").forEach((a) => a.onclick = () => { A.view = a.dataset.v; render(); });
+(async () => { if (KEY) { try { await load(); } catch { KEY = ""; } } render(); })();
+</script>
+</body>
+</html>
