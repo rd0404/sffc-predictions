@@ -1,3 +1,3 @@
 { "name": "SFFC Predictor League", "short_name": "SFFC Predictor", "start_url": "/", "display": "standalone",
-  "background_color": "#0d0b14", "theme_color": "#1a1230",
+  "background_color": "#0E1015", "theme_color": "#0E1015",
   "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }] }

@@ -3,7 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#1a1230">
+<meta name="theme-color" content="#0E1015">
+<script>
+  // Same choice as the SFFC site: saved per phone, defaults to the phone's setting
+  (function(){ try{ var t=localStorage.getItem("sffc-theme"); if(!t) t=window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"; document.documentElement.setAttribute("data-theme",t); }catch(e){ document.documentElement.setAttribute("data-theme","dark"); } })();
+</script>
+
 <title>SFFC Predictor League</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -16,13 +21,14 @@
   <div class="wrap">
     <div class="top">
       <svg class="crest" viewBox="0 0 64 64" aria-hidden="true">
-        <path d="M32 3 56 11v20c0 15-10 25-24 30C18 56 8 46 8 31V11z" fill="#2a1a52" stroke="#e8b931" stroke-width="3"/>
-        <text x="32" y="25" text-anchor="middle" font-family="Barlow Condensed,sans-serif" font-weight="800" font-size="13" fill="#e8b931" letter-spacing="1">SFFC</text>
-        <circle cx="32" cy="40" r="10" fill="#f3f0fa"/><path d="M32 33.5l5 3.6-1.9 5.9h-6.2l-1.9-5.9z" fill="#16131f"/>
+        <path class="c-shield" d="M32 3 56 11v20c0 15-10 25-24 30C18 56 8 46 8 31V11z" stroke-width="3"/>
+        <text class="c-text" x="32" y="25" text-anchor="middle" font-family="Barlow Condensed,sans-serif" font-weight="800" font-size="13" letter-spacing="1">SFFC</text>
+        <circle class="c-ball" cx="32" cy="40" r="10"/><path class="c-patch" d="M32 33.5l5 3.6-1.9 5.9h-6.2l-1.9-5.9z"/>
       </svg>
       <div class="brand"><h1>SFFC <span>Predictor</span></h1><p id="season">Satara Football Fan Club</p></div>
       <div class="sp"></div>
       <div class="who" id="who"></div>
+      <button class="theme-btn" id="themeBtn" aria-label="Switch light/dark">☀️</button>
     </div>
     <nav class="tabs" id="tabs">
       <a href="#home" data-v="home">Home</a>
@@ -370,7 +376,7 @@ function compareTable(data) {
       <td class="tot">${fmtPts(r.T)}</td></tr>`;
   }).join("");
   return `<div class="card"><div class="scroll"><table class="t"><thead>${head}</thead><tbody>${actual}${body}</tbody></table></div>
-  <div class="legend"><span><i style="background:#1f5c3c"></i>Exact / bonus hit</span><span><i style="background:#264a7a"></i>Goal difference</span><span><i style="background:#5a4512"></i>Result</span><span><i style="box-shadow:inset 0 0 0 2px var(--gold)"></i>Joker</span><span><span class="ok">✓</span> picked & happened · <span class="no">✗</span> picked, didn't · <span class="na">—</span> not picked · ● waiting</span></div>
+  <div class="legend"><span><i class="sw-exact"></i>Exact / bonus hit</span><span><i class="sw-gd"></i>Goal difference</span><span><i class="sw-res"></i>Result</span><span><i class="sw-jk"></i>Joker</span><span><span class="ok">✓</span> picked & happened · <span class="no">✗</span> picked, didn't · <span class="na">—</span> not picked · ● waiting</span></div>
   <div class="pad note">${qs.map((q, i) => `<b>B${i + 1}</b> ${esc(q.text)}`).join("<br>")}${sc.length ? "<br>" : ""}${sc.map((s) => `<b>S${s.n}</b> (+${s.points ?? s.n}) ${esc(s.text)}`).join("<br>")}</div></div>`;
 }
 
@@ -386,7 +392,7 @@ async function viewTable() {
     const best = Object.fromEntries(gws.map((g) => [g.gw, Math.max(...g.rows.map((r) => r.T))]));
     return head + `<div class="card"><div class="scroll"><table class="t"><thead><tr><th class="s1">#</th><th class="name s2">Player</th>${gws.map((g) => `<th>GW${g.gw}</th>`).join("")}<th>Total</th></tr></thead><tbody>
     ${rows.map((r) => `<tr class="${meCls(r.pid)} ${rkCls(r)}"><td class="rk s1">${r.rank}</td><td class="name s2">${esc(r.name)}</td>${gws.map((g) => { const v = r.byGw[g.gw]; return v == null ? `<td class="z">–</td>` : `<td class="${v === best[g.gw] ? "exact" : ""}">${fmtPts(v)}</td>`; }).join("")}<td class="tot">${fmtPts(r.T)}</td></tr>`).join("")}
-    </tbody></table></div><div class="legend"><span><i style="background:#1f5c3c"></i>GW winner</span><span>– didn't play</span></div></div>`;
+    </tbody></table></div><div class="legend"><span><i class="sw-exact"></i>GW winner</span><span>– didn't play</span></div></div>`;
   }
   return head + podium(rows) + `<div class="card"><div class="scroll"><table class="t"><thead><tr><th class="s1">#</th><th class="name s2">Player</th><th title="Gameweeks played">P</th><th>PP</th><th>GD</th><th>CW</th><th>Joker</th><th>B1</th><th>B2</th><th>Scen.</th><th title="GW wins">Wins</th><th>${last ? "GW" + last.gw : "Last"}</th><th>Total</th></tr></thead><tbody>
   ${rows.map((r) => `<tr class="${meCls(r.pid)} ${rkCls(r)}"><td class="rk s1">${r.rank}</td><td class="name s2">${esc(r.name)}</td><td>${r.P}</td><td>${r.PP}</td><td>${r.GD}</td><td>${r.CW}</td><td>${fmtPts(r.J)}</td><td>${r.b1}</td><td>${r.b2}</td><td>${r.S}</td><td>${r.wins || '<span class="z">0</span>'}</td><td>${last && r.byGw[last.gw] != null ? fmtPts(r.byGw[last.gw]) : '<span class="z">–</span>'}</td><td class="tot">${fmtPts(r.T)}</td></tr>`).join("")}
@@ -433,6 +439,16 @@ function viewRules() {
     • Scores update live from the Premier League during the GW.
   </div>`;
 }
+
+
+/* theme toggle */
+(function(){
+  const b = document.getElementById("themeBtn"); if(!b) return;
+  const set = (t) => { document.documentElement.setAttribute("data-theme", t); b.textContent = t === "light" ? "🌙" : "☀️"; b.title = t === "light" ? "Dark mode" : "Light mode";
+    const m = document.querySelector('meta[name="theme-color"]'); if (m) m.content = t === "light" ? "#F5F4F0" : "#0E1015"; try{ localStorage.setItem("sffc-theme", t); }catch(e){} };
+  set(document.documentElement.getAttribute("data-theme") || "dark");
+  b.onclick = () => set(document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light");
+})();
 
 /* ============ router ============ */
 const VIEWS = { home: viewHome, predict: viewPredict, gw: viewGw, table: viewTable, stats: viewStats, rules: viewRules };

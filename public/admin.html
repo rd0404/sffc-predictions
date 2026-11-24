@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Admin · SFFC Predictor</title>
+<script>
+  // Same choice as the SFFC site: saved per phone, defaults to the phone's setting
+  (function(){ try{ var t=localStorage.getItem("sffc-theme"); if(!t) t=window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"; document.documentElement.setAttribute("data-theme",t); }catch(e){ document.documentElement.setAttribute("data-theme","dark"); } })();
+</script>
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
@@ -18,14 +23,12 @@
   .x{background:none;border:0;color:var(--red);cursor:pointer;font-size:18px}
   .out{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:13px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;max-height:320px;overflow:auto}
   .k{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
-  .badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;background:var(--panel3)}
-  .badge.open{background:#173a29;color:#bff5d6}.badge.final{background:#2a1f4a;color:#d8c8ff}.badge.draft{background:#3a2a10;color:#ffe7a6}
 </style>
 </head>
 <body>
 <header><div class="wrap"><div class="top">
   <div class="brand"><h1>SFFC <span>Predictor</span> · Admin</h1><p>Fixtures, results, players and data</p></div><div class="sp"></div>
-  <a class="btn sm" href="/">← Site</a></div>
+  <button class="theme-btn" id="themeBtn" aria-label="Switch light/dark">☀️</button><a class="btn sm" href="/">← Site</a></div>
   <nav class="tabs" id="tabs"><a data-v="gws" class="on">Gameweeks</a><a data-v="players">Players</a><a data-v="settings">Settings</a><a data-v="data">Data</a></nav>
 </div></header>
 <main class="wrap" id="main"></main>
@@ -34,6 +37,16 @@
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 let KEY = (() => { try { return sessionStorage.getItem("sffc_admin") || ""; } catch { return ""; } })();
+
+/* theme toggle */
+(function(){
+  const b = document.getElementById("themeBtn"); if(!b) return;
+  const set = (t) => { document.documentElement.setAttribute("data-theme", t); b.textContent = t === "light" ? "🌙" : "☀️"; b.title = t === "light" ? "Dark mode" : "Light mode";
+    const m = document.querySelector('meta[name="theme-color"]'); if (m) m.content = t === "light" ? "#F5F4F0" : "#0E1015"; try{ localStorage.setItem("sffc-theme", t); }catch(e){} };
+  set(document.documentElement.getAttribute("data-theme") || "dark");
+  b.onclick = () => set(document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light");
+})();
+
 const A = { view: "gws", ov: null, edit: null, preds: null };
 
 async function adm(action, body = {}) {
