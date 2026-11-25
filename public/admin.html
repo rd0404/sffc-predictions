@@ -205,6 +205,7 @@ function predEditor(pid) {
 function playersView() {
   const ps = A.ov.players.slice().sort((a, b) => a.name.localeCompare(b.name));
   return `<h2 class="sec">Players (${ps.filter((p) => p.active).length} active)</h2>
+  ${A.ov.config.requirePasskey ? "" : `<div class="msg info">Passkeys are off (Settings), so players just pick their name. You only need passkeys if you switch them on.</div>`}
   <div class="card pad"><div class="row"><button class="btn gold" id="pinsMissing">Issue passkeys to everyone without one</button>
     <span class="note">${A.ov.mail ? "Email is on: players can also tap “Email me my passkey” on the Predict page." : "Email is off: send each player their passkey yourself (WhatsApp DM)."}</span></div><div id="pinOut"></div></div>
   <div class="card pad ed"><table><thead><tr><th>Name (as shown)</th><th>Email</th><th>Active</th><th>Passkey</th><th></th></tr></thead><tbody>
@@ -234,7 +235,9 @@ function settingsView() {
   return `<h2 class="sec">Settings</h2><div class="card pad ed"><div class="k">
     <div><label class="lab">League name</label><input class="inp" id="cName" value="${esc(c.name)}"></div>
     <div><label class="lab">Season</label><input class="inp" id="cSeason" value="${esc(c.season)}"></div>
-    <div><label class="lab">Scenarios each player picks</label><input class="inp n" id="cPicks" value="${c.scenarioPicks}"></div></div>
+    <div><label class="lab">Scenarios each player picks</label><input class="inp n" id="cPicks" value="${c.scenarioPicks}"></div>
+    <div><label class="lab">Passkeys</label><label style="display:flex;gap:8px;align-items:center;padding-top:8px"><input type="checkbox" id="cPass" ${c.requirePasskey ? "checked" : ""}> Players need a passkey to predict</label>
+      <p class="note" style="margin:6px 0 0">Off: players just pick their name. Turn on later if anyone misuses it — issue passkeys from Players first.</p></div></div>
     <h3 class="sub">Phases</h3><table><thead><tr><th>Name</th><th>From GW</th><th>To GW</th></tr></thead><tbody id="phRows">
     ${c.phases.map((p) => `<tr data-id="${esc(p.id)}"><td><input class="inp" data-f="name" value="${esc(p.name)}"></td><td><input class="inp n" data-f="from" value="${p.from}"></td><td><input class="inp n" data-f="to" value="${p.to}"></td></tr>`).join("")}
     </tbody></table><div class="row" style="margin-top:14px"><button class="btn gold" id="cSave">Save settings</button></div>
@@ -243,7 +246,7 @@ function settingsView() {
 function bindSettings() {
   $("#cSave").onclick = async () => {
     const phases = [...document.querySelectorAll("#phRows tr")].map((tr) => ({ id: tr.dataset.id, name: $("[data-f=name]", tr).value, from: Number($("[data-f=from]", tr).value), to: Number($("[data-f=to]", tr).value) }));
-    try { await adm("save-config", { config: { name: $("#cName").value, season: $("#cSeason").value, scenarioPicks: Number($("#cPicks").value), phases } }); await load(); toast("Saved"); } catch (e) { toast(e.message); } };
+    try { await adm("save-config", { config: { name: $("#cName").value, season: $("#cSeason").value, scenarioPicks: Number($("#cPicks").value), phases, requirePasskey: $("#cPass").checked } }); await load(); toast("Saved"); } catch (e) { toast(e.message); } };
 }
 
 /* ---------------- data ---------------- */

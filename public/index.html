@@ -69,7 +69,7 @@ async function loadGw(n, force) { if (!S.gw[n] || force) S.gw[n] = await api("gw
 
 function whoBox() {
   const s = S.session;
-  $("#who").innerHTML = s ? `Hi <b>${esc(s.name)}</b><br><a id="logout">Switch player</a>` : "";
+  $("#who").innerHTML = s ? `<b>${esc(s.name)}</b><a id="logout">Switch</a>` : "";
   const l = $("#logout");
   if (l) l.onclick = () => { ls.del("sffc_session"); S.session = null; whoBox(); render(); };
 }
@@ -143,8 +143,9 @@ async function viewHome() {
   if (!cur) {
     hero = `<div class="hero"><div class="lbl">Season ${esc(st.config.season)}</div><div class="gwbig">Coming soon</div><p class="note">The first gameweek hasn't been published yet.</p></div>`;
   } else if (!cur.locked) {
-    const g = cur.gw, sub = new Set(cur.submitted);
-    const mine = S.session && sub.has(S.session.pid);
+    const g = cur.gw;
+    let mine = false;
+    if (S.session) { try { mine = !!(await api("my", { gw: g.gw, pid: S.session.pid, pin: S.session.pin })).submittedAt; } catch {} }
     hero = `<div class="hero">
       <div class="lbl">Predictions open</div><div class="gwbig">GW${g.gw}</div>
       <div class="note" style="margin-top:8px">Deadline <b style="color:var(--ink)">${when(g.deadline)}</b></div>
@@ -152,8 +153,7 @@ async function viewHome() {
       <div class="row" style="margin:6px 0 14px"><a class="btn gold big" href="#predict">${mine ? "✏️ Edit my prediction" : "⚽ Predict GW" + g.gw}</a>
       ${mine ? `<span class="pill"><span class="dot"></span>You're in</span>` : ""}</div>
       ${g.note ? `<div class="msg info">${esc(g.note)}</div>` : ""}
-      <div class="note" style="margin-bottom:8px"><b style="color:var(--ink)">${sub.size}</b> of ${st.players.length} have predicted</div>
-      <div class="chips">${st.players.map((p) => `<span class="chip ${sub.has(p.id) ? "in" : ""}">${esc(p.name)}</span>`).join("")}</div>
+      <div class="row"><span class="pill"><b>${cur.submittedCount}</b> of ${st.players.length} have predicted</span></div>
     </div>`;
   } else {
     const g = cur.gw, live = !cur.final && g.matches.some((m) => !m.finished);
@@ -184,20 +184,21 @@ function loginHTML() {
   <div class="card pad" style="max-width:460px">
     <label class="lab">Your name</label>
     <select class="sel" id="lgName" style="width:100%"><option value="">Select…</option>${st.players.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</select>
-    <label class="lab" style="margin-top:14px">Passkey</label>
-    <input class="inp" id="lgPin" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit passkey" style="width:100%;letter-spacing:4px;font-size:18px">
+    ${st.config.requirePasskey ? `<label class="lab" style="margin-top:14px">Passkey</label>
+    <input class="inp" id="lgPin" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit passkey" style="width:100%;letter-spacing:4px;font-size:18px">` : ""}
     <div class="row" style="margin-top:16px"><button class="btn gold" id="lgGo">Continue</button>
-      ${st.mail ? `<button class="link" id="lgMail">Don't have it? Email me my passkey</button>` : `<span class="note">No passkey? Ask the admin.</span>`}</div>
+      ${!st.config.requirePasskey ? "" : st.mail ? `<button class="link" id="lgMail">Don't have it? Email me my passkey</button>` : `<span class="note">No passkey? Ask the admin.</span>`}</div>
     <div id="lgMsg"></div>
-    <p class="note" style="margin-top:14px">This phone will remember you.</p>
+    <p class="note" style="margin-top:14px">This phone will remember you. Pick your own name — you'll get an email copy of every prediction saved under it.</p>
   </div>`;
 }
 function bindLogin() {
   const msg = (t, cls = "err") => $("#lgMsg").innerHTML = `<div class="msg ${cls}">${esc(t)}</div>`;
   $("#lgGo").onclick = async () => {
-    const pid = $("#lgName").value, pin = $("#lgPin").value.trim();
+    const needPin = !!S.state.config.requirePasskey;
+    const pid = $("#lgName").value, pin = needPin ? $("#lgPin").value.trim() : "";
     if (!pid) return msg("Pick your name");
-    if (!pin) return msg("Enter your passkey");
+    if (needPin && !pin) return msg("Enter your passkey");
     $("#lgGo").disabled = true;
     try { const r = await api("login", { pid, pin }); S.session = { pid, pin, name: r.name }; ls.set("sffc_session", S.session); whoBox(); render(); }
     catch (e) { msg(e.message); $("#lgGo").disabled = false; }
@@ -221,17 +222,22 @@ async function viewPredict() {
   }
   const data = await loadGw(open.gw, true);
   const g = data.gw;
-  let mine = null;
-  try { mine = (await api("my", { gw: g.gw, pid: S.session.pid, pin: S.session.pin })).pred; }
+  let mine = null, submittedAt = null;
+  try { const r = await api("my", { gw: g.gw, pid: S.session.pid, pin: S.session.pin }); mine = r.pred; submittedAt = r.submittedAt; }
   catch (e) { if (/passkey|not found/i.test(e.message)) { ls.del("sffc_session"); S.session = null; whoBox(); return loginHTML() + `<div class="msg err">${esc(e.message)} — please log in again.</div>`; } throw e; }
+  // What this phone last sent (kept after submitting), or an unsent draft — whichever is newer.
+  const sent = ls.get("sffc_sent_" + g.gw + "_" + S.session.pid);
+  if (!mine && sent && submittedAt) mine = sent;
   const saved = ls.get("sffc_draft_" + g.gw + "_" + S.session.pid);
   const src = saved && (!mine || Date.parse(saved.at) > Date.parse(mine.ts)) ? saved : mine;
+  const elsewhere = submittedAt && !mine; // saved, but from another phone
   D = { gw: g, scores: {}, joker: src?.joker || null, answers: { ...(src?.answers || {}) }, scenarios: new Set(src?.scenarios || []), savedTs: mine?.ts || null };
   for (const m of g.matches) { const p = /^(\d+)-(\d+)$/.exec(src?.scores?.[m.id] || ""); D.scores[m.id] = p ? [Number(p[1]), Number(p[2])] : [null, null]; }
   const picks = S.state.config.scenarioPicks || 3;
   return `
   <div class="row" style="margin-top:20px"><span class="pill gw">GW${g.gw}</span><span class="pill">Deadline <b>${when(g.deadline)}</b></span>
-    ${mine ? `<span class="pill"><span class="dot"></span>Saved ${when(mine.ts)}</span>` : `<span class="pill">Not submitted yet</span>`}</div>
+    ${submittedAt ? `<span class="pill"><span class="dot"></span>Saved ${when(submittedAt)}</span>` : `<span class="pill">Not submitted yet</span>`}</div>
+  ${elsewhere ? `<div class="msg info">You already submitted GW${g.gw} at ${when(submittedAt)} from another phone. Your picks aren't shown here so nobody else can peek at them. Submitting again replaces them.</div>` : ""}
   ${countdownHTML("cd")}
   ${g.note ? `<div class="msg info">${esc(g.note)}</div>` : ""}
   <h3 class="sub">Scores <span class="note" style="text-transform:none;letter-spacing:0">— tap J on one match to make it your Joker (double points)</span></h3>
@@ -240,7 +246,7 @@ async function viewPredict() {
   ${g.scenarios.length ? `<h3 class="sub">Scenarios <span class="note" style="text-transform:none;letter-spacing:0">— pick ${picks}. Scenario points are earned only if it happens.</span></h3>
   <div class="card" id="scnList">${g.scenarios.map((s) => `<div class="scn ${D.scenarios.has(s.n) ? "on" : ""}" data-n="${s.n}"><div class="bx">${D.scenarios.has(s.n) ? "✓" : ""}</div><div class="tx">${esc(s.text)}</div><div class="pv">+${s.points ?? s.n}</div></div>`).join("")}</div>` : ""}
   <div id="pMsg"></div>
-  <div class="savebar"><button class="btn gold big" id="pSave">${mine ? "Update prediction" : "Submit prediction"}</button><span class="note" id="pStatus"></span></div>`;
+  <div class="savebar"><button class="btn gold big" id="pSave">${submittedAt ? "Update prediction" : "Submit prediction"}</button><span class="note" id="pStatus"></span></div>`;
 }
 function stepper(id, side, v) {
   return `<div class="step"><button data-m="${id}" data-s="${side}" data-d="-1">−</button><input data-m="${id}" data-s="${side}" inputmode="numeric" maxlength="2" value="${v ?? ""}" placeholder="–" class="${v == null ? "blank" : ""}"><button data-m="${id}" data-s="${side}" data-d="1">+</button></div>`;
@@ -307,6 +313,8 @@ function bindPredict() {
       const r = await api("predict", { gw: g.gw, pid: S.session.pid, pin: S.session.pin, joker: D.joker, answers: D.answers, scenarios: [...D.scenarios],
         scores: Object.fromEntries(Object.entries(D.scores).map(([k, v]) => [k, v.join("-")])) });
       ls.del("sffc_draft_" + g.gw + "_" + S.session.pid);
+      ls.set("sffc_sent_" + g.gw + "_" + S.session.pid, { ts: r.savedAt, at: r.savedAt, joker: D.joker, answers: D.answers, scenarios: [...D.scenarios],
+        scores: Object.fromEntries(Object.entries(D.scores).map(([k, v]) => [k, v.join("-")])) });
       $("#pMsg").innerHTML = `<div class="msg ok">✅ GW${g.gw} prediction saved at ${when(r.savedAt)}.${r.emailed ? " A copy is on its way to your email." : ""} You can change it until the deadline.</div>`;
       $("#pSave").textContent = "Update prediction"; $("#pStatus").textContent = "";
       S.gw[g.gw] = null; loadState();
@@ -330,9 +338,7 @@ async function viewGw() {
   const head = `<div class="row" style="margin:20px 0 6px">${sel}${live ? `<span class="pill live">Live</span>` : data.final ? `<span class="pill">Final</span>` : ""}
     <span class="sp"></span>${data.locked ? `<div class="seg" id="gwSeg"><button data-m="table" class="${S.gwMode === "table" ? "on" : ""}">Table</button><button data-m="compare" class="${S.gwMode === "compare" ? "on" : ""}">Compare all</button></div>` : ""}</div>`;
   if (!data.locked) {
-    const sub = new Set(data.submitted);
-    return head + `<div class="card pad"><b>GW${g.gw} is open until ${when(g.deadline)}.</b><p class="note">Everyone's picks appear here after the deadline. So far ${sub.size} of ${S.state.players.length} have predicted.</p>
-      <div class="chips">${S.state.players.map((p) => `<span class="chip ${sub.has(p.id) ? "in" : ""}">${esc(p.name)}</span>`).join("")}</div></div>`;
+    return head + `<div class="card pad"><b>GW${g.gw} is open until ${when(g.deadline)}.</b><p class="note">Everyone's picks appear here after the deadline. So far ${data.submittedCount} of ${S.state.players.length} have predicted.</p></div>`;
   }
   if (live) S.timers.push(setInterval(async () => { if (S.view !== "gw") return; await loadGw(S.gwSel, true); S.tables = null; render(); }, 60000));
   return head + (S.gwMode === "compare" ? compareTable(data) : gwTable(data));

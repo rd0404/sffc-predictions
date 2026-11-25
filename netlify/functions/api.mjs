@@ -35,10 +35,11 @@ function publicGw(gw) {
 
 async function savePlayers(players) { await (await db()).set("players", players); }
 
-async function checkPlayer(pid, pin) {
+async function checkPlayer(pid, pin, cfg) {
   const players = await getPlayers();
   const p = players.find((x) => x.id === pid && x.active !== false);
   if (!p) fail(404, "Player not found");
+  if (!(cfg || (await getConfig())).requirePasskey) return p; // passkeys switched off in Settings
   const d = await db();
   const f = (await d.get(`fail/${pid}`)) || { n: 0, until: 0 };
   if (f.until > now()) fail(429, `Too many wrong passkeys. Try again in ${Math.ceil((f.until - now()) / 60000)} min.`);
@@ -111,7 +112,7 @@ async function state() {
   const open = gws.filter((g) => g.status === "open" && !isLocked(g)).sort((a, b) => a.gw - b.gw)[0];
   const current = open ? open.gw : gws.length ? gws[gws.length - 1].gw : null;
   return {
-    config: { name: cfg.name, season: cfg.season, scenarioPicks: cfg.scenarioPicks, phases: cfg.phases, points: cfg.points },
+    config: { name: cfg.name, season: cfg.season, scenarioPicks: cfg.scenarioPicks, phases: cfg.phases, points: cfg.points, requirePasskey: !!cfg.requirePasskey },
     players: players.filter((p) => p.active !== false).map(({ id, name }) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name)),
     gws: gws.map((g) => ({ gw: g.gw, status: g.status, deadline: g.deadline, locked: isLocked(g), matches: g.matches?.length || 0 })),
     current, mail: mailEnabled(), now: new Date().toISOString(),
@@ -125,10 +126,10 @@ async function gwView(n) {
   const locked = isLocked(gw);
   if (!locked) {
     const keys = await (await db()).list(`pred/${n}/`);
-    return { gw: publicGw(gw), locked, submitted: keys.map((k) => k.split("/")[2]) };
+    return { gw: publicGw(gw), locked, submittedCount: keys.length }; // who has predicted stays private until the deadline
   }
   const data = await lockedGwData(n, players, cfg);
-  return { gw: publicGw(data.gw), locked, final: gw.status === "final", submitted: Object.keys(data.preds), preds: data.preds, rows: data.rows };
+  return { gw: publicGw(data.gw), locked, final: gw.status === "final", submittedCount: Object.keys(data.preds).length, preds: data.preds, rows: data.rows };
 }
 
 async function tables() {
@@ -166,7 +167,7 @@ async function sendPin(body) {
 
 async function predict(body, req) {
   const cfg = await getConfig();
-  const p = await checkPlayer(body.pid, body.pin);
+  const p = await checkPlayer(body.pid, body.pin, cfg);
   const gw = await getGw(Number(body.gw));
   if (!gw || gw.status !== "open") fail(400, "This gameweek isn't open for predictions");
   if (isLocked(gw)) fail(403, "The deadline has passed — predictions are locked");
@@ -245,7 +246,8 @@ async function admin(action, body, req) {
     }
     case "save-config": {
       const c = body.config || {};
-      const next = { ...cfg, name: c.name || cfg.name, season: c.season || cfg.season, scenarioPicks: Number(c.scenarioPicks) || cfg.scenarioPicks, phases: Array.isArray(c.phases) ? c.phases : cfg.phases };
+      const next = { ...cfg, name: c.name || cfg.name, season: c.season || cfg.season, scenarioPicks: Number(c.scenarioPicks) || cfg.scenarioPicks, phases: Array.isArray(c.phases) ? c.phases : cfg.phases,
+        requirePasskey: c.requirePasskey === undefined ? !!cfg.requirePasskey : !!c.requirePasskey };
       await d.set("config", next);
       return { ok: true, config: next };
     }
@@ -405,8 +407,12 @@ export default async (req) => {
       return json({ ok: true, name: p.name });
     }
     if (req.method === "POST" && parts[0] === "my") {
-      await checkPlayer(body.pid, body.pin);
-      return json({ pred: (await (await db()).get(`pred/${Number(body.gw)}/${body.pid}`)) || null });
+      const cfg = await getConfig();
+      await checkPlayer(body.pid, body.pin, cfg);
+      const pred = (await (await db()).get(`pred/${Number(body.gw)}/${body.pid}`)) || null;
+      // Without passkeys anyone can pick any name, so never send the picks back — only when they were saved.
+      if (!cfg.requirePasskey) return json({ pred: null, submittedAt: pred?.ts || null });
+      return json({ pred, submittedAt: pred?.ts || null });
     }
     if (req.method === "POST" && parts[0] === "predict") return json(await predict(body, req));
     if (req.method === "POST" && parts[0] === "send-pin") return json(await sendPin(body));
